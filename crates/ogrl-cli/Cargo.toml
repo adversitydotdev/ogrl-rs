@@ -1,0 +1,28 @@
+[package]
+name = "ogrl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fast standalone CLI for linting, formatting, importing, bundling, evaluating, diffing, and rendering OGRL repositories."
+
+[[bin]]
+name = "ogrl"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+ogrl-core = { path = "../ogrl-core" }
+ogrl-oscal = { path = "../ogrl-oscal" }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
+

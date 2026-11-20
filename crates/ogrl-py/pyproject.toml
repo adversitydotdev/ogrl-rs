@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ogrl-rs"
+version = "0.1.0"
+description = "High-performance Rust kernel, YAML 1.2 parser/linter, status evaluator, and OSCAL 1.2.3 bridge for OGRL."
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "ogrl_rs._ogrl_rs"
+features = ["extension-module"]
+manifest-path = "Cargo.toml"

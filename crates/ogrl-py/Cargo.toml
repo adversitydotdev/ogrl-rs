@@ -1,0 +1,27 @@
+[package]
+name = "ogrl-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PyO3 Python bindings for ogrl-core and ogrl-oscal."
+
+[lib]
+name = "_ogrl_rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+chrono.workspace = true
+ogrl-core = { path = "../ogrl-core" }
+ogrl-oscal = { path = "../ogrl-oscal" }
+pyo3.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.27"
+
+[lints]
+workspace = true

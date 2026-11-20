@@ -1,0 +1,23 @@
+[package]
+name = "ogrl-oscal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OSCAL 1.2.3 (JSON & XML) catalog importer, component-definition importer, 6-document package renderer, and narrative SSP renderer for OGRL."
+
+[dependencies]
+chrono.workspace = true
+ogrl-core = { path = "../ogrl-core" }
+quick-xml.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
+

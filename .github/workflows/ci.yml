@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (workspace + ogrl-py)
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy -p ogrl-py --features extension-module -- -D warnings
+      - name: Test workspace
+        run: cargo test --locked
+
+  python:
+    name: Python bindings (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install maturin & pytest
+        run: python -m pip install --upgrade pip maturin pytest
+      - name: Build and install ogrl-py
+        run: maturin develop --release --manifest-path crates/ogrl-py/Cargo.toml
+      - name: Run Python binding tests
+        run: pytest -v crates/ogrl-py/tests
