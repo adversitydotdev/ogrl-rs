@@ -13,6 +13,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    name: Verify tag & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          echo "Tag version:   $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Error: tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION" >&2
+            exit 1
+          fi
+      - name: Test workspace
+        run: cargo test --locked
+
   build-cli:
     name: CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -22,25 +44,59 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
+            archive: tar.gz
+            bin: ogrl
+            smoke_test: true
+          - os: macos-15
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            bin: ogrl
+            smoke_test: false
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin: ogrl
+            smoke_test: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            bin: ogrl
+            smoke_test: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin: ogrl.exe
+            smoke_test: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
       - name: Build ogrl CLI
         run: cargo build --release --locked --bin ogrl --target ${{ matrix.target }}
-      - name: Package archive
+      - name: Smoke test binary
+        if: matrix.smoke_test
+        shell: bash
+        run: |
+          "target/${{ matrix.target }}/release/${{ matrix.bin }}" --version
+      - name: Package tar.gz
+        if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
           mkdir -p dist
           tar -czf "dist/ogrl-${{ matrix.target }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" ogrl
-          (cd dist && shasum -a 256 "ogrl-${{ matrix.target }}.tar.gz" > "ogrl-${{ matrix.target }}.tar.gz.sha256")
+            -C "target/${{ matrix.target }}/release" "${{ matrix.bin }}"
+      - name: Package zip
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive `
+            -Path "target\${{ matrix.target }}\release\${{ matrix.bin }}" `
+            -DestinationPath "dist\ogrl-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.target }}
@@ -56,14 +112,24 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
             manylinux: auto
+          - os: macos-15
+            target: x86_64-apple-darwin
+            manylinux: auto
           - os: ubuntu-latest
             target: x86_64
             manylinux: 2_28
           - os: ubuntu-24.04-arm
             target: aarch64
             manylinux: 2_28
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: auto
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.os != 'Linux'
+        with:
+          targets: ${{ matrix.target }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -72,16 +138,16 @@ jobs:
         with:
           working-directory: crates/ogrl-py
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
           manylinux: ${{ matrix.manylinux }}
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: crates/ogrl-py/dist/*.whl
 
   publish:
     name: Publish GitHub Release
-    needs: [build-cli, build-wheels]
+    needs: [verify, build-cli, build-wheels]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -89,6 +155,15 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Generate SHA-256 checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          for file in ogrl-*.tar.gz ogrl-*.zip; do
+            [ -f "$file" ] && sha256sum "$file" > "$file.sha256"
+          done
+          sha256sum ogrl-*.tar.gz ogrl-*.zip *.whl > SHA256SUMS.txt
+          ls -la
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -39,3 +39,8 @@ yaml-rust2 = "0.10"
 [workspace.lints.clippy]
 collapsible_if = "allow"
 
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+
+

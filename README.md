@@ -11,6 +11,23 @@ Designed to parse, lint, format, import, evaluate, diff, and render massive OGRL
 - `crates/ogrl-cli` — Standalone `ogrl` binary.
 - `crates/ogrl-py` — Coarse-grained PyO3 / maturin Python bindings (`import ogrl_rs`) releasing the GIL for parallel Rust execution (`OgrlGraph`, `lint_path`, `read_directory`, `evaluate_program`, `compare_library_revisions`, `import_oscal_catalog`, `import_oscal_component`, `render_oscal`, `render_ssp`).
 
+## Installation
+
+Prebuilt `ogrl` CLI binaries and Python wheels are published on [GitHub Releases](https://github.com/adversitydotdev/ogrl-rs/releases):
+
+```bash
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/adversitydotdev/ogrl-rs/releases/latest/download/ogrl-aarch64-apple-darwin.tar.gz | tar -xz
+
+# Linux (x86_64)
+curl -fsSL https://github.com/adversitydotdev/ogrl-rs/releases/latest/download/ogrl-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+
+# Linux (aarch64)
+curl -fsSL https://github.com/adversitydotdev/ogrl-rs/releases/latest/download/ogrl-aarch64-unknown-linux-gnu.tar.gz | tar -xz
+```
+
+Archives are also published for `x86_64-apple-darwin` (`.tar.gz`) and `x86_64-pc-windows-msvc` (`.zip`), along with `SHA256SUMS.txt`.
+
 ## Python bindings (`ogrl_rs`)
 
 Build and install locally with [maturin](https://www.maturin.rs/) (or `uv pip install -e crates/ogrl-py`):
