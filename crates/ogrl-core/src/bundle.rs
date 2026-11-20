@@ -422,7 +422,7 @@ fn read_exchange_value(
 
     // Deserialize all exchange objects in parallel with Rayon.
     let has_spans = !spans.is_empty();
-    let parsed: Vec<Result<(OgrlObject, SpanMap), Diagnostic>> = raw_objects
+    let parsed: Vec<Result<(OgrlObject, SpanMap), Box<Diagnostic>>> = raw_objects
         .into_par_iter()
         .enumerate()
         .map(|(idx, item)| {
@@ -442,7 +442,7 @@ fn read_exchange_value(
                 }
                 Err(e) => {
                     let span = spans.get(&ptr_prefix).copied();
-                    Err(Diagnostic {
+                    Err(Box::new(Diagnostic {
                         severity: Severity::Error,
                         code: "E_SCHEMA".into(),
                         object_id: obj_id,
@@ -452,7 +452,7 @@ fn read_exchange_value(
                         pointer: ptr_prefix,
                         detail: e.to_string(),
                         conflict: false,
-                    })
+                    }))
                 }
             }
         })
@@ -488,7 +488,7 @@ fn read_exchange_value(
                     origin,
                 });
             }
-            Err(diag) => diagnostics.push(diag),
+            Err(diag) => diagnostics.push(*diag),
         }
     }
 
