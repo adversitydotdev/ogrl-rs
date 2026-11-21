@@ -436,7 +436,7 @@ fn write_kv(out: &mut String, pad: &str, indent: usize, key: &str, val: &Value) 
     let key_fmt = format_key(key);
     match val {
         Value::String(s) => {
-            if should_use_block(s) {
+            if should_use_block(s, indent + key_fmt.len() + 2) {
                 write_prose(out, indent, &key_fmt, s);
             } else {
                 let _ = writeln!(out, "{pad}{key_fmt}: {}", yaml_scalar(s));
@@ -500,7 +500,9 @@ fn write_seq(out: &mut String, items: &[Value], indent: usize) {
                         first = false;
                         let key_fmt = format_key(key);
                         match val {
-                            Value::String(s) if should_use_block(s) => {
+                            Value::String(s)
+                                if should_use_block(s, indent + 2 + key_fmt.len() + 2) =>
+                            {
                                 let _ = write!(out, "{pad}- ");
                                 write_prose_inline_first(out, indent + 2, &key_fmt, s);
                             }
@@ -535,8 +537,8 @@ fn write_seq(out: &mut String, items: &[Value], indent: usize) {
                     }
                 }
             }
-            Value::String(s) if should_use_block(s) => {
-                let _ = writeln!(out, "{pad}- |");
+            Value::String(s) if should_use_block(s, indent + 2) => {
+                let _ = writeln!(out, "{pad}- |{}", chomp(s));
                 for line in s.trim_end_matches('\n').split('\n') {
                     if line.is_empty() {
                         out.push('\n');
@@ -581,9 +583,37 @@ fn write_value(out: &mut String, val: &Value, indent: usize) {
     }
 }
 
-fn should_use_block(s: &str) -> bool {
+/// Maximum rendered line width (indent included) for formatted YAML.
+pub const MAX_LINE_WIDTH: usize = 68;
+/// Floor for wrapped prose width so deeply nested blocks stay readable.
+const MIN_PROSE_WIDTH: usize = 40;
+
+/// Prose width available to a block scalar whose content sits at `indent + 2`.
+fn prose_width(indent: usize) -> usize {
+    MAX_LINE_WIDTH
+        .saturating_sub(indent + 2)
+        .max(MIN_PROSE_WIDTH)
+}
+
+/// Whether a string should render as a block scalar. `prefix_len` is the
+/// width of everything preceding the value on an inline line (indent, `- `,
+/// key, and `: `).
+fn should_use_block(s: &str, prefix_len: usize) -> bool {
     let trimmed = s.trim_end_matches('\n');
-    trimmed.contains('\n') || (trimmed.len() > 80 && trimmed.contains(' '))
+    if trimmed.contains('\n') {
+        return true;
+    }
+    trimmed.contains(' ') && prefix_len + yaml_scalar(s).len() > MAX_LINE_WIDTH
+}
+
+/// Block chomping indicator that round-trips the value's trailing newline:
+/// clip (default) when it ends with one, strip (`-`) when it does not.
+fn chomp(s: &str) -> &'static str {
+    if s.ends_with('\n') {
+        ""
+    } else {
+        "-"
+    }
 }
 
 fn format_key(key: &str) -> String {
@@ -677,14 +707,15 @@ fn needs_quote(s: &str) -> bool {
 fn write_prose(out: &mut String, indent: usize, key: &str, text: &str) {
     let pad = " ".repeat(indent);
     let trimmed = text.trim();
+    let chomp = chomp(text);
     if !trimmed.contains('\n') {
-        let _ = writeln!(out, "{pad}{key}: >");
-        for line in wrap_prose(trimmed, 76) {
+        let _ = writeln!(out, "{pad}{key}: >{chomp}");
+        for line in wrap_prose(trimmed, prose_width(indent)) {
             let _ = writeln!(out, "{pad}  {line}");
         }
         return;
     }
-    let _ = writeln!(out, "{pad}{key}: |");
+    let _ = writeln!(out, "{pad}{key}: |{chomp}");
     for line in trimmed.split('\n') {
         if line.is_empty() {
             out.push('\n');
@@ -697,14 +728,15 @@ fn write_prose(out: &mut String, indent: usize, key: &str, text: &str) {
 fn write_prose_inline_first(out: &mut String, indent: usize, key: &str, text: &str) {
     let pad = " ".repeat(indent);
     let trimmed = text.trim();
+    let chomp = chomp(text);
     if !trimmed.contains('\n') {
-        let _ = writeln!(out, "{key}: >");
-        for line in wrap_prose(trimmed, 76) {
+        let _ = writeln!(out, "{key}: >{chomp}");
+        for line in wrap_prose(trimmed, prose_width(indent)) {
             let _ = writeln!(out, "{pad}  {line}");
         }
         return;
     }
-    let _ = writeln!(out, "{key}: |");
+    let _ = writeln!(out, "{key}: |{chomp}");
     for line in trimmed.split('\n') {
         if line.is_empty() {
             out.push('\n');
@@ -819,5 +851,50 @@ mod tests {
             assert!(!line.contains("{{") || line.contains("}}"));
         }
         assert!(lines.join(" ").contains("{{ ac_02_odp_04 }};"));
+    }
+
+    fn long_prose() -> String {
+        "Restrict logical access to systems, administrative interfaces, and \
+         sensitive data using role-based access control scoped to least \
+         privilege, requiring {{ privileged_elevation }} for administrative \
+         actions."
+            .to_string()
+    }
+
+    #[test]
+    fn format_respects_max_line_width_at_every_depth() {
+        let prose = long_prose();
+        let doc = serde_json::json!({
+            "type": "control",
+            "summary": "Short inline value stays inline.",
+            "statement": prose,
+            "parameters": {"privileged_elevation": {"label": "x", "value": prose}},
+            "parts": [{"id": "a", "statement": prose}],
+        });
+        let out = format_yaml(&doc, None);
+        for line in out.lines() {
+            assert!(
+                line.len() <= MAX_LINE_WIDTH,
+                "line exceeds {MAX_LINE_WIDTH}: {line:?}"
+            );
+        }
+        assert!(out.contains("summary: Short inline value stays inline.\n"));
+    }
+
+    #[test]
+    fn format_round_trips_trailing_newline_exactly() {
+        let prose = long_prose();
+        let with_nl = format!("{prose}\n");
+        let doc = serde_json::json!({
+            "type": "control",
+            "statement": prose,
+            "guidance": with_nl,
+            "objective": "line one\nline two",
+            "tags": ["one two three four five six seven eight nine ten eleven twelve"],
+        });
+        let out = format_yaml(&doc, None);
+        let (back, _) = parse_yaml(&out).unwrap();
+        assert_eq!(back, doc, "formatted output:\n{out}");
+        assert_eq!(format_yaml(&back, None), out, "format is not idempotent");
     }
 }
