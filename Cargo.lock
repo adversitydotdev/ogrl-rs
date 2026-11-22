@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "ogrl-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "ogrl-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "hex",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "ogrl-oscal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "csv",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "ogrl-py"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "ogrl-core",

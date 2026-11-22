@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ogrl-rs"
-version = "0.2.0"
+version = "0.3.0"
 description = "High-performance Rust kernel, YAML 1.2 parser/linter, status evaluator, and OSCAL 1.2.3 bridge for OGRL."
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
