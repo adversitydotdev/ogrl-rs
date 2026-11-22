@@ -2,6 +2,7 @@
 name = "ogrl-oscal"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "OSCAL 1.2.3 (JSON & XML) catalog importer, component-definition importer, 6-document package renderer, and narrative SSP renderer for OGRL."
 

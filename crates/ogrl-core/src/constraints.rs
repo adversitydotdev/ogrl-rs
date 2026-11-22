@@ -33,9 +33,10 @@ pub enum StorageOrigin {
     Provider,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    #[default]
     Error,
     Warning,
 }
@@ -46,6 +47,8 @@ pub struct Violation {
     pub detail: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub conflict: bool,
+    #[serde(default)]
+    pub severity: Severity,
 }
 
 /// A rich diagnostic combining object ID, file path, source span, JSON pointer, and message.
@@ -106,6 +109,16 @@ impl<'a> Checker<'a> {
             pointer: pointer.into(),
             detail: detail.into(),
             conflict: false,
+            severity: Severity::Error,
+        });
+    }
+
+    fn warn(&mut self, pointer: impl Into<String>, detail: impl Into<String>) {
+        self.out.push(Violation {
+            pointer: pointer.into(),
+            detail: detail.into(),
+            conflict: false,
+            severity: Severity::Warning,
         });
     }
 
@@ -114,6 +127,7 @@ impl<'a> Checker<'a> {
             pointer: pointer.into(),
             detail: detail.into(),
             conflict: true,
+            severity: Severity::Error,
         });
     }
 
@@ -226,7 +240,48 @@ pub fn check(obj: &OgrlObject, graph: &Graph, origin: StorageOrigin) -> Vec<Viol
         OgrlObject::MappingReview(r) => check_mapping_review(&mut c, r),
         OgrlObject::Framework(_) | OgrlObject::Party(_) => {}
     }
+    check_library_id_conventions(&mut c, obj);
     c.out
+}
+
+fn check_library_id_conventions(c: &mut Checker<'_>, obj: &OgrlObject) {
+    if c.origin != StorageOrigin::Library {
+        return;
+    }
+    let id = obj.id();
+    let Ok((kind, remainder)) = ids::split(id) else {
+        return;
+    };
+    if ids::is_reserved(id).unwrap_or(false) && kind != "mapping" && remainder.contains('_') {
+        c.fail(
+            "/id",
+            "standard-library ids use underscores only in derived mapping _to_ / _part_ joins",
+        );
+    }
+    if let OgrlObject::Mapping(m) = obj {
+        if !ids::is_reserved(id).unwrap_or(false) {
+            return;
+        }
+        let Ok(expected) = ids::derived_mapping_id(&m.source_ref, &m.target_ref) else {
+            return;
+        };
+        if id == expected {
+            return;
+        }
+        let legacy_delimiter = remainder.contains("-to-") && !remainder.contains("_to_");
+        let detail = if legacy_delimiter {
+            format!(
+                "mapping id should follow RFC 0001 section 6.3 derived form {expected} (use _to_ and _part_, not -to-)"
+            )
+        } else {
+            format!("mapping id should follow RFC 0001 section 6.3 derived form {expected}")
+        };
+        if crate::model::spec_is_0_2(obj.spec_version()) {
+            c.fail("/id", detail);
+        } else {
+            c.warn("/id", detail);
+        }
+    }
 }
 
 fn check_requirement(c: &mut Checker<'_>, r: &Requirement) {
@@ -401,13 +456,20 @@ fn check_mapping(c: &mut Checker<'_>, m: &Mapping) {
         }
     }
 
-    if c.origin == StorageOrigin::Organization {
+    if matches!(
+        c.origin,
+        StorageOrigin::Organization | StorageOrigin::Library
+    ) {
         for other in c.graph.mappings() {
-            if other.id != m.id
-                && c.graph.is_organization(&other.id)
-                && other.source_ref == m.source_ref
-                && other.target_ref == m.target_ref
-            {
+            if other.id == m.id || m.is_revoked() || other.is_revoked() {
+                continue;
+            }
+            let same_scope = match c.origin {
+                StorageOrigin::Organization => c.graph.is_organization(&other.id),
+                StorageOrigin::Library => c.graph.is_library(&other.id),
+                StorageOrigin::Provider => false,
+            };
+            if same_scope && other.source_ref == m.source_ref && other.target_ref == m.target_ref {
                 c.conflict(
                     "/target_ref",
                     format!("{} already maps this source and target", other.id),
@@ -571,8 +633,15 @@ fn check_test(c: &mut Checker<'_>, t: &Test) {
     if t.method == TestMethod::Manual {
         c.fail("/run", "a manual test has no run block");
     }
-    if run.runner == "shell" && run.command.as_deref().is_none_or(str::is_empty) {
-        c.fail("/run/command", "runner shell requires command");
+    match run.runner.as_str() {
+        "shell" => {
+            if run.command.as_deref().is_none_or(str::is_empty) {
+                c.fail("/run/command", "runner shell requires command");
+            }
+        }
+        "rule" => check_rule_run(c, run),
+        "integration" => check_integration_run(c, run),
+        _ => {}
     }
     if let Err(msg) = timeout_seconds(run.timeout.as_deref()) {
         c.fail("/run/timeout", msg);
@@ -703,6 +772,20 @@ fn check_implementation(c: &mut Checker<'_>, i: &Implementation) {
         c.fail(
             "/subservice_ref",
             "responsibility subservice names the party in subservice_ref",
+        );
+    }
+    if i.is_provider()
+        && matches!(
+            i.responsibility,
+            Responsibility::Shared | Responsibility::Customer
+        )
+        && i.customer_responsibility
+            .as_deref()
+            .is_none_or(str::is_empty)
+    {
+        c.fail(
+            "/customer_responsibility",
+            "provider implementations with responsibility shared or customer require customer_responsibility",
         );
     }
     if i.is_revoked() || i.control_ref.is_none() {
@@ -889,6 +972,79 @@ fn check_exception(c: &mut Checker<'_>, e: &ExceptionObj) {
     c.check_ref("/risk_ref", e.risk_ref.as_deref(), &["risk"], false);
 }
 
+fn run_extra_str<'a>(run: &'a crate::model::RunSpec, key: &str) -> Option<&'a str> {
+    run.extra.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn run_extra_str_list<'a>(run: &'a crate::model::RunSpec, key: &str) -> Option<Vec<&'a str>> {
+    run.extra
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
+}
+
+fn check_rule_run(c: &mut Checker<'_>, run: &crate::model::RunSpec) {
+    let source = run_extra_str(run, "source");
+    let Some(source) = source else {
+        c.fail("/run/source", "runner rule requires source");
+        return;
+    };
+    if !ids::is_run_source(source) {
+        c.fail(
+            "/run/source",
+            format!("source must be <integration>/<resource>@<major>, not {source:?}"),
+        );
+    }
+    let has_assert = run_extra_str(run, "assert").is_some();
+    let has_aggregate = run_extra_str(run, "aggregate").is_some();
+    if has_assert == has_aggregate {
+        c.fail(
+            "/run/assert",
+            "runner rule requires exactly one of assert or aggregate",
+        );
+    }
+}
+
+fn check_integration_run(c: &mut Checker<'_>, run: &crate::model::RunSpec) {
+    let check = run_extra_str(run, "check");
+    let Some(check) = check else {
+        c.fail("/run/check", "runner integration requires check");
+        return;
+    };
+    if !ids::is_run_source(check) {
+        c.fail(
+            "/run/check",
+            format!("check must be <integration>/<check>@<major>, not {check:?}"),
+        );
+    }
+    let sources = run_extra_str_list(run, "sources");
+    let Some(sources) = sources else {
+        c.fail("/run/sources", "runner integration requires sources");
+        return;
+    };
+    if sources.is_empty() {
+        c.fail("/run/sources", "runner integration requires sources");
+        return;
+    }
+    let check_integration = check.split('/').next();
+    for (idx, source) in sources.iter().enumerate() {
+        if !ids::is_run_source(source) {
+            c.fail(
+                format!("/run/sources/{idx}"),
+                format!("each source must be <integration>/<resource>@<major>, not {source:?}"),
+            );
+        }
+        if let Some(integration) = check_integration {
+            if source.split('/').next() != Some(integration) {
+                c.fail(
+                    format!("/run/sources/{idx}"),
+                    "each source must belong to the same integration as check",
+                );
+            }
+        }
+    }
+}
+
 fn check_mapping_review(c: &mut Checker<'_>, r: &MappingReview) {
     c.check_ref("/mapping_ref", Some(&r.mapping_ref), &["mapping"], false);
     if r.is_revoked() {
@@ -925,9 +1081,11 @@ where
                 .map(|v| {
                     let span = spans.and_then(|s| lookup_span(s, &v.pointer));
                     Diagnostic {
-                        severity: Severity::Error,
+                        severity: v.severity,
                         code: if v.conflict {
                             "E_CONFLICT".to_string()
+                        } else if v.severity == Severity::Warning {
+                            "W_CONSTRAINT".to_string()
                         } else {
                             "E_CONSTRAINT".to_string()
                         },

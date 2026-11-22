@@ -15,4 +15,7 @@ pub mod yaml;
 pub use bundle::{BundleManifest, LoadedBundle, LoadedObject};
 pub use constraints::{Diagnostic, Severity, StorageOrigin, Violation};
 pub use graph::Graph;
-pub use model::{ObjectType, OgrlObject, SPEC_VERSION};
+pub use model::{
+    ObjectType, OgrlObject, SPEC_VERSION, readable_spec_version, readable_spec_version_label,
+    spec_is_0_2,
+};

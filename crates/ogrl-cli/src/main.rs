@@ -412,7 +412,11 @@ fn cmd_lint(
                 } else {
                     format!(" [{}]", d.pointer)
                 };
-                eprintln!("{loc}: error[{}]{ptr}: {}", d.code, d.detail);
+                let level = match d.severity {
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                };
+                eprintln!("{loc}: {level}[{}]{ptr}: {}", d.code, d.detail);
             }
             if error_count == 0 {
                 println!(

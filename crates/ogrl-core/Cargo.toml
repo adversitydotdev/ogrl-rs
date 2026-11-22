@@ -2,6 +2,7 @@
 name = "ogrl-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Core OGRL (RFC 0001 & RFC 0002) object model, strict YAML 1.2 parser/formatter, graph validator, parameter resolver, and status evaluator."
 

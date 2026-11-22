@@ -2,6 +2,7 @@
 name = "ogrl-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Fast standalone CLI for linting, formatting, importing, bundling, evaluating, diffing, and rendering OGRL repositories."
 

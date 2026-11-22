@@ -11,6 +11,10 @@ static REMAINDER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$").unwrap());
 static DOMAIN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z]{2,63}\.[a-z0-9-]*[a-z][a-z0-9-]*(?:\.|$)").unwrap());
+/// RFC 0001 §7.6: `<integration>/<resource>@<major>`.
+static RUN_SOURCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-z]{2,63}(?:\.[a-z0-9][a-z0-9-]*)+/[a-z0-9-]+@[1-9][0-9]*$").unwrap()
+});
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum IdError {
@@ -90,6 +94,37 @@ pub fn object_path(object_id: &str) -> Result<String, IdError> {
     Ok(format!("{kind}/{remainder}.yaml"))
 }
 
+/// True when `value` matches the snapshot or integration-check source grammar (RFC 0001 §7.6).
+pub fn is_run_source(value: &str) -> bool {
+    RUN_SOURCE_RE.is_match(value)
+}
+
+/// Remainder portion of a derived standard-library mapping id (RFC 0001 §6.3).
+pub fn derived_mapping_remainder(source_ref: &str, target_ref: &str) -> Result<String, IdError> {
+    let (_, src_rem) = split(source_ref)?;
+    let base_tgt = base(target_ref);
+    let (_, tgt_rem) = split(base_tgt)?;
+    let mut rest = format!("{src_rem}_to_{tgt_rem}");
+    if let Some(frag) = fragment(target_ref) {
+        if frag.starts_with("obj.") {
+            return Err(IdError::Malformed(format!(
+                "mapping target fragments are requirement parts, not {frag}"
+            )));
+        }
+        rest.push_str("_part_");
+        rest.push_str(&frag.replace('.', "-"));
+    }
+    Ok(rest)
+}
+
+/// Full derived mapping id for a `(source_ref, target_ref)` pair (RFC 0001 §6.3).
+pub fn derived_mapping_id(source_ref: &str, target_ref: &str) -> Result<String, IdError> {
+    Ok(format!(
+        "mapping--{}",
+        derived_mapping_remainder(source_ref, target_ref)?
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +162,23 @@ mod tests {
         assert_eq!(objective_of("requirement--x#obj.a"), Some("a"));
         assert_eq!(objective_of("requirement--x#obj."), None);
         assert_eq!(objective_of("requirement--x#a"), None);
+    }
+
+    #[test]
+    fn derived_mapping_ids() {
+        assert_eq!(
+            derived_mapping_id("control--ogrl-ac-01", "requirement--soc2-tsc-2017-cc6.1").unwrap(),
+            "mapping--ogrl-ac-01_to_soc2-tsc-2017-cc6.1"
+        );
+        assert_eq!(
+            derived_mapping_id(
+                "control--ogrl-ac-01",
+                "requirement--nist-sp-800-53-r5-ac-2#a"
+            )
+            .unwrap(),
+            "mapping--ogrl-ac-01_to_nist-sp-800-53-r5-ac-2_part_a"
+        );
+        assert!(is_run_source("dev.adversity.okta/users@1"));
+        assert!(!is_run_source("bad-source"));
     }
 }
