@@ -41,10 +41,10 @@ maturin develop --release
 import ogrl_rs
 
 # Lint a repository in parallel (~70ms for 1,725 NIST files)
-report = ogrl_rs.lint_path("../OGRL/library")
+report = ogrl_rs.lint_path("../ogrl-library/library")
 
 # Or load an indexed Rust graph once and run zero-reparse queries
-graph = ogrl_rs.OgrlGraph.from_path("./my-org", library="../OGRL/library")
+graph = ogrl_rs.OgrlGraph.from_path("./my-org", library="../ogrl-library/library")
 status = graph.evaluate("program--com.acme.prod", "2026-11-09T00:00:00Z")
 oscal_files = graph.render_oscal(
     "program--com.acme.prod",
@@ -58,32 +58,32 @@ oscal_files = graph.render_oscal(
 
 ```bash
 # Lint a library, provider, or organization repository (text, json, or sarif)
-cargo run --release -- lint ../OGRL/library
-cargo run --release -- lint ./my-org --library ../OGRL/library --format sarif
+cargo run --release -- lint ../ogrl-library/library
+cargo run --release -- lint ./my-org --library ../ogrl-library/library --format sarif
 
 # Check or apply canonical YAML 1.2 formatting
-cargo run --release -- fmt ../OGRL/library --check
+cargo run --release -- fmt ../ogrl-library/library --check
 
-# Import pinned NIST SP 800-53 r5 + SP 800-171 r3 OSCAL catalogs (with assessment objectives)
+# Import pinned NIST SP 800-53 r5, SP 800-171 r3/r2 OSCAL catalogs (with assessment objectives)
 cargo run --release -- import nist --out library
 
 # Import any local OSCAL catalog (JSON or XML)
 cargo run --release -- import oscal --catalog catalog.json --framework-id nist-sp-800-53-r5 --out library
 
 # Import an OSCAL component definition as a provider bundle
-cargo run --release -- import oscal-component --input component.json --library ../OGRL/library --out provider/django
+cargo run --release -- import oscal-component --input component.json --library ../ogrl-library/library --out provider/django
 
 # Pack / unpack / digest bundles
-cargo run --release -- bundle pack ../OGRL/library --out library.json
-cargo run --release -- bundle digest ../OGRL/library
+cargo run --release -- bundle pack ../ogrl-library/library --out library.json
+cargo run --release -- bundle digest ../ogrl-library/library
 
 # Evaluate program compliance status or readiness summary
-cargo run --release -- eval ./my-org --library ../OGRL/library --summary
+cargo run --release -- eval ./my-org --library ../ogrl-library/library --summary
 
 # Preview status & stale mapping review impact across library revisions
 cargo run --release -- diff --before ./lib-v1 --after ./lib-v2 --org ./my-org
 
 # Render 6-document OSCAL 1.2.3 package (JSON + XML) or narrative SSP
-cargo run --release -- render oscal ./my-org --library ../OGRL/library --framework framework--nist-sp-800-53-r5 --out ./oscal --xml
-cargo run --release -- render ssp ./my-org --library ../OGRL/library --out ./ssp
+cargo run --release -- render oscal ./my-org --library ../ogrl-library/library --framework framework--nist-sp-800-53-r5 --out ./oscal --xml
+cargo run --release -- render ssp ./my-org --library ../ogrl-library/library --out ./ssp
 ```
