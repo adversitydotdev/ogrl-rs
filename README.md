@@ -1,6 +1,6 @@
 # ogrl-rs
 
-High-performance Rust toolchain for **OGRL** (Open GRC Language — RFC 0001 & RFC 0002).
+High-performance Rust toolchain for **OGRL** (Open Governance Reference Language — RFC 0001 & RFC 0002).
 
 Designed to parse, lint, format, import, evaluate, diff, and render massive OGRL repositories and OSCAL 1.2.3 packages with parallel execution (`rayon`), span-aware strict YAML 1.2 parsing, and zero external runtime dependencies.
 

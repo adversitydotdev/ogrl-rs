@@ -17,7 +17,7 @@ version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/adversitydotdev/ogrl-rs"
-description = "High-performance Rust parser, linter, formatter, evaluator, and OSCAL bridge for OGRL (Open GRC Language)."
+description = "High-performance Rust parser, linter, formatter, evaluator, and OSCAL bridge for OGRL (Open Governance Reference Language)."
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }

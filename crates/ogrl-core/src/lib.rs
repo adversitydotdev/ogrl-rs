@@ -1,4 +1,4 @@
-//! Core OGRL (Open GRC Language) implementation covering RFC 0001 and RFC 0002.
+//! Core OGRL (Open Governance Reference Language) implementation covering RFC 0001 and RFC 0002.
 
 pub mod baselines;
 pub mod bundle;
