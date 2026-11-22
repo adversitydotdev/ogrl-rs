@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use crate::constraints::{Diagnostic, Severity, StorageOrigin};
 use crate::graph::Graph;
 use crate::ids;
-use crate::model::{OgrlObject, SPEC_VERSION, readable_spec_version};
+use crate::model::{OgrlObject, readable_spec_version, readable_spec_version_label};
 use crate::yaml::{self, ParseOptions, SpanMap};
 
 #[derive(Debug, Error)]
@@ -413,8 +413,9 @@ fn read_exchange_value(
         .map_err(|e| BundleError::Invalid(format!("invalid bundle manifest: {e}")))?;
     if !readable_spec_version(&manifest.spec_version) {
         return Err(BundleError::Invalid(format!(
-            "spec_version {:?} is not readable as {SPEC_VERSION}",
-            manifest.spec_version
+            "spec_version {:?} is not readable ({})",
+            manifest.spec_version,
+            readable_spec_version_label()
         )));
     }
     let origin = origin_override
@@ -639,8 +640,9 @@ fn parse_manifest(text: &str, options: ParseOptions) -> Result<BundleManifest, V
             col: sp.map(|s| s.col),
             pointer: "/spec_version".into(),
             detail: format!(
-                "spec_version {:?} is not readable as {SPEC_VERSION}",
-                manifest.spec_version
+                "spec_version {:?} is not readable ({})",
+                manifest.spec_version,
+                readable_spec_version_label()
             ),
             conflict: false,
         }]);

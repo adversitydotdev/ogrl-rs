@@ -276,7 +276,11 @@ fn check_library_id_conventions(c: &mut Checker<'_>, obj: &OgrlObject) {
         } else {
             format!("mapping id should follow RFC 0001 section 6.3 derived form {expected}")
         };
-        c.warn("/id", detail);
+        if crate::model::spec_is_0_2(obj.spec_version()) {
+            c.fail("/id", detail);
+        } else {
+            c.warn("/id", detail);
+        }
     }
 }
 

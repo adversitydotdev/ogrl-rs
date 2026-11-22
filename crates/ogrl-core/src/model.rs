@@ -10,25 +10,49 @@ use thiserror::Error;
 use crate::ids;
 use crate::time::{serde_opt_timestamp, serde_timestamp};
 
-pub const SPEC_VERSION: &str = "0.1.0";
+/// The OGRL specification revision this toolchain primarily emits (RFC 0001 header).
+pub const SPEC_VERSION: &str = "0.2.0";
 
-/// A reader accepts any `spec_version` whose `major.minor` matches `0.1` (RFC 0001 §6.2).
-pub fn readable_spec_version(version: &str) -> bool {
+/// `major.minor` language revisions this reader implements (RFC 0001 §6.2).
+pub const READABLE_SPEC_MAJOR_MINOR: &[&str] = &["0.1", "0.2"];
+
+/// Human-readable list of accepted `spec_version` families for diagnostics.
+pub fn readable_spec_version_label() -> &'static str {
+    "0.1.x or 0.2.x"
+}
+
+/// Parse `major.minor.patch` when present and well-formed.
+fn parse_spec_semver(version: &str) -> Option<(&str, &str, &str)> {
     let mut parts = version.split('.');
-    let Some(major) = parts.next() else {
-        return false;
-    };
-    let Some(minor) = parts.next() else {
-        return false;
-    };
-    let Some(patch) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some() || patch.is_empty() || !patch.chars().all(|c| c.is_ascii_digit()) {
-        return false;
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let patch = parts.next()?;
+    if parts.next().is_some()
+        || major.is_empty()
+        || minor.is_empty()
+        || patch.is_empty()
+        || !major.chars().all(|c| c.is_ascii_digit())
+        || !minor.chars().all(|c| c.is_ascii_digit())
+        || !patch.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
     }
-    let mut spec = SPEC_VERSION.split('.');
-    major == spec.next().unwrap() && minor == spec.next().unwrap()
+    Some((major, minor, patch))
+}
+
+/// A reader accepts any object whose `major.minor` matches an implemented revision,
+/// regardless of `patch` (RFC 0001 §6.2).
+pub fn readable_spec_version(version: &str) -> bool {
+    let Some((major, minor, _patch)) = parse_spec_semver(version) else {
+        return false;
+    };
+    let key = format!("{major}.{minor}");
+    READABLE_SPEC_MAJOR_MINOR.contains(&key.as_str())
+}
+
+/// True when the object's `spec_version` is RFC 0001 0.2.x (stricter §6.3 mapping IDs).
+pub fn spec_is_0_2(version: &str) -> bool {
+    parse_spec_semver(version).is_some_and(|(major, minor, _)| major == "0" && minor == "2")
 }
 
 #[derive(Debug, Error)]
@@ -37,8 +61,8 @@ pub enum ModelError {
     NotAMapping,
     #[error("missing or unknown object type {0:?}")]
     UnknownType(String),
-    #[error("spec_version {0:?} is not readable as {SPEC_VERSION}")]
-    UnsupportedSpecVersion(String),
+    #[error("spec_version {0:?} is not readable ({1})")]
+    UnsupportedSpecVersion(String, &'static str),
     #[error("id error: {0}")]
     InvalidId(#[from] ids::IdError),
     #[error("{id}: id type {id_type:?} does not match object type {obj_type:?}")]
@@ -1176,6 +1200,7 @@ impl OgrlObject {
         if !readable_spec_version(obj.spec_version()) {
             return Err(ModelError::UnsupportedSpecVersion(
                 obj.spec_version().to_string(),
+                readable_spec_version_label(),
             ));
         }
         let (id_type, _) = ids::split(obj.id())?;
@@ -1423,5 +1448,28 @@ impl<'de> Deserialize<'de> for OgrlObject {
     {
         let value = Value::deserialize(deserializer)?;
         Self::from_value(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod spec_version_tests {
+    use super::*;
+
+    #[test]
+    fn readable_spec_version_accepts_implemented_major_minor() {
+        assert!(readable_spec_version("0.1.0"));
+        assert!(readable_spec_version("0.1.99"));
+        assert!(readable_spec_version("0.2.0"));
+        assert!(readable_spec_version("0.2.3"));
+        assert!(!readable_spec_version("0.3.0"));
+        assert!(!readable_spec_version("1.0.0"));
+        assert!(!readable_spec_version("0.2"));
+        assert!(!readable_spec_version("0.2.0.0"));
+    }
+
+    #[test]
+    fn detects_spec_0_2_family() {
+        assert!(super::spec_is_0_2("0.2.0"));
+        assert!(!super::spec_is_0_2("0.1.0"));
     }
 }

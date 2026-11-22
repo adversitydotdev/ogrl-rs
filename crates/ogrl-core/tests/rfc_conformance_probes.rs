@@ -4,7 +4,7 @@ use serde_json::json;
 
 use ogrl_core::constraints::{Severity, StorageOrigin, check};
 use ogrl_core::graph::Graph;
-use ogrl_core::model::OgrlObject;
+use ogrl_core::model::{OgrlObject, readable_spec_version};
 
 const STAMP: &str = "2026-11-08T00:00:00Z";
 const CTRL: &str = "control--ogrl-ac-01";
@@ -54,6 +54,18 @@ fn no_errors(obj: &OgrlObject, graph: &Graph, origin: StorageOrigin) -> bool {
     check(obj, graph, origin)
         .iter()
         .all(|v| v.severity != Severity::Error)
+}
+
+#[test]
+fn accepts_spec_version_0_2_0_objects() {
+    assert!(readable_spec_version("0.2.0"));
+    let obj = OgrlObject::from_value(json!({
+        "type": "party", "id": "party--com.acme.sec",
+        "spec_version": "0.2.0", "created": STAMP, "modified": STAMP,
+        "name": "Security", "kind": "team"
+    }))
+    .expect("0.2.0 party");
+    assert_eq!(obj.spec_version(), "0.2.0");
 }
 
 #[test]
