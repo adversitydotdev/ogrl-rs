@@ -458,13 +458,17 @@ pub fn write_library_output(
     Ok(())
 }
 
-/// Write `bundle.yaml` for the standard library.
+/// Write `bundle.yaml` for the standard library. An existing manifest is left untouched so
+/// regenerating catalogs into a released library never resets its version or name.
 pub fn write_library_bundle(
     out_dir: &Path,
     created: DateTime<Utc>,
     modified: DateTime<Utc>,
 ) -> Result<(), CatalogError> {
     fs::create_dir_all(out_dir)?;
+    if out_dir.join("bundle.yaml").exists() {
+        return Ok(());
+    }
     let manifest = BundleManifest {
         object_type: "bundle".into(),
         id: "bundle--ogrl-library".into(),

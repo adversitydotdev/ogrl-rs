@@ -609,11 +609,7 @@ fn should_use_block(s: &str, prefix_len: usize) -> bool {
 /// Block chomping indicator that round-trips the value's trailing newline:
 /// clip (default) when it ends with one, strip (`-`) when it does not.
 fn chomp(s: &str) -> &'static str {
-    if s.ends_with('\n') {
-        ""
-    } else {
-        "-"
-    }
+    if s.ends_with('\n') { "" } else { "-" }
 }
 
 fn format_key(key: &str) -> String {

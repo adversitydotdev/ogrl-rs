@@ -3,6 +3,7 @@
 pub mod catalog;
 pub mod component;
 pub mod nist;
+pub mod nist171r2;
 pub mod render;
 pub mod ssp;
 pub mod walk;
@@ -14,5 +15,9 @@ pub use catalog::{
 };
 pub use component::{ComponentImportError, ImportedProviderBundle, import_component_definition};
 pub use nist::{NistCatalog, OSCAL_CONTENT_COMMIT, nist_catalogs};
+pub use nist171r2::{
+    SP800_171A_CSV_URL, sp800_171a_csv_to_oscal, sp800_171r2_options, sp800_171r2_source,
+    verify_sp800_171a_csv,
+};
 pub use render::{RenderError, RenderedFile, oscal_control_id, render_oscal_package};
 pub use ssp::render_ssp;

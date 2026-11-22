@@ -20,8 +20,10 @@ use ogrl_core::status::{self, compare_revisions};
 use ogrl_core::time::{format_timestamp, parse_timestamp};
 use ogrl_core::yaml::{self, ParseOptions};
 use ogrl_oscal::{
-    ImportOptions, import_catalog_bytes, import_component_definition, index_only, nist_catalogs,
-    render_oscal_package, render_ssp, write_library_bundle, write_library_output,
+    ImportOptions, SP800_171A_CSV_URL, import_catalog_bytes, import_component_definition,
+    index_only, nist_catalogs, render_oscal_package, render_ssp, sp800_171a_csv_to_oscal,
+    sp800_171r2_options, sp800_171r2_source, verify_sp800_171a_csv, write_library_bundle,
+    write_library_output,
 };
 
 #[derive(Parser)]
@@ -122,7 +124,8 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ImportCommands {
-    /// Fetch and import pinned NIST SP 800-53 r5 and SP 800-171 r3 OSCAL catalogs.
+    /// Fetch and import pinned NIST SP 800-53 r5, SP 800-171 r3 (OSCAL), and SP 800-171 r2
+    /// (SP 800-171A CSV) catalogs.
     Nist {
         /// Output directory for the generated library.
         #[arg(long, default_value = "library")]
@@ -638,6 +641,22 @@ fn cmd_import(target: ImportCommands) -> Result<ExitCode, String> {
                     newest = Some(output.modified);
                 }
             }
+
+            // SP 800-171 Rev 2 has no NIST OSCAL; compile it from the pinned SP 800-171A CSV.
+            let csv = http_get(SP800_171A_CSV_URL)?;
+            verify_sp800_171a_csv(&csv)?;
+            let catalog = sp800_171a_csv_to_oscal(&csv)?;
+            let mut output = import_catalog_bytes(&catalog, &sp800_171r2_options(), None)
+                .map_err(|e| e.to_string())?;
+            output.framework.source = Some(sp800_171r2_source());
+            write_library_output(&out, &output).map_err(|e| e.to_string())?;
+            println!(
+                "{}: {} requirements ({} objectives) from SP 800-171A CSV",
+                output.framework_id,
+                output.requirements.len(),
+                output.objectives_count
+            );
+
             if let Some(stamp) = newest {
                 write_library_bundle(&out, stamp, stamp).map_err(|e| e.to_string())?;
             }
