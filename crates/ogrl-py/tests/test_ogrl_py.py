@@ -11,6 +11,16 @@ import pytest
 import ogrl_rs
 
 STAMP = "2026-11-08T00:00:00Z"
+
+
+def test_binding_version_matches_package_metadata() -> None:
+    import importlib.metadata
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", ogrl_rs.__version__)
+    assert ogrl_rs.__version__ == importlib.metadata.version("ogrl-rs")
+
+
 OGRL_LIBRARY = Path(__file__).resolve().parents[3] / "ogrl-library" / "library"
 
 
