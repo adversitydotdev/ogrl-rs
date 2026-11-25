@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::{Map, Number, Value};
+
+use crate::comments::{CommentBook, index_pointer, join_pointer};
 use thiserror::Error;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
@@ -139,6 +141,7 @@ impl EventBuilder {
     fn push_value(&mut self, value: Value, span: Span) {
         let ptr = self.current_pointer();
         self.spans.entry(ptr).or_insert(span);
+        let mut key_span: Option<(String, Span)> = None;
         match self.stack.last_mut() {
             None => {
                 self.root = Some(value);
@@ -175,9 +178,14 @@ impl EventBuilder {
                             String::new()
                         }
                     };
+                    let key_ptr = format!("{pointer}/{}", escape_pointer(&key_str));
                     *pending_key = Some((key_str, span));
+                    key_span = Some((key_ptr, span));
                 }
             }
+        }
+        if let Some((key_ptr, key_at)) = key_span {
+            self.spans.entry(key_ptr).or_insert(key_at);
         }
     }
 
@@ -366,7 +374,7 @@ fn is_plain_float(s: &str) -> bool {
     (has_dot || has_exp) && digits > 0
 }
 
-fn escape_pointer(segment: &str) -> String {
+pub(crate) fn escape_pointer(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
 }
 
@@ -388,19 +396,114 @@ pub const ENVELOPE_ORDER: &[&str] = &[
 ];
 
 /// Format an OGRL object or bundle manifest as deterministic canonical YAML 1.2.
+///
+/// `header_comment`, when set, is written as a single `# {header_comment}` line.
+/// This is the Python-binding contract and does not interpret already-hashed
+/// header lines. CLI formatting uses [`format_yaml_with_comments`] instead.
 pub fn format_yaml(value: &Value, header_comment: Option<&str>) -> String {
+    format_yaml_inner(value, header_comment, true, None)
+}
+
+/// Format `value` in canonical key order, re-emitting `header` (already including
+/// `#` lines) and comments from `comments` next to the pointers they attach to.
+pub fn format_yaml_with_comments(
+    value: &Value,
+    header: Option<&str>,
+    comments: &CommentBook,
+) -> String {
+    format_yaml_inner(value, header, false, Some(comments))
+}
+
+fn format_yaml_inner(
+    value: &Value,
+    header: Option<&str>,
+    hash_prefix: bool,
+    comments: Option<&CommentBook>,
+) -> String {
     let mut out = String::new();
-    if let Some(comment) = header_comment {
-        let _ = writeln!(out, "# {comment}");
-    }
-    match value {
-        Value::Object(map) => write_map(&mut out, map, 0, true),
-        other => {
-            write_value(&mut out, other, 0);
-            out.push('\n');
+    if let Some(comment) = header {
+        if hash_prefix {
+            let _ = writeln!(out, "# {comment}");
+        } else {
+            out.push_str(comment);
+            if !comment.ends_with('\n') {
+                out.push('\n');
+            }
         }
     }
+    match value {
+        Value::Object(map) => write_map(&mut out, map, 0, true, "", comments),
+        other => {
+            write_value(&mut out, other, 0, "", comments);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    if let Some(book) = comments {
+        book.write_document_end(&mut out);
+    }
     out
+}
+
+fn trailing_suffix(comments: Option<&CommentBook>, pointer: &str) -> String {
+    comments
+        .and_then(|c| c.trailing_suffix(pointer))
+        .unwrap_or_default()
+}
+
+/// Result of formatting a YAML document, including any comments that did not survive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatResult {
+    pub formatted: String,
+    /// Comments from the source that are not present in `formatted`.
+    pub dropped: Vec<crate::comments::YamlComment>,
+}
+
+/// Parse `source`, format it canonically, and optionally preserve comments.
+///
+/// When `drop_comments` is true, only the leading header is kept. Otherwise
+/// comments are reattached to the keys they belong to (and move with those
+/// keys when the formatter reorders). Any comment the emitter could not
+/// preserve is listed in [`FormatResult::dropped`].
+pub fn format_source(source: &str, drop_comments: bool) -> Result<FormatResult, Vec<YamlError>> {
+    use crate::comments::{
+        CommentBook, CommentPlacement, collect_attached_comments, comment_body,
+        leading_comment_header, scan_comments,
+    };
+    use std::collections::HashMap;
+
+    let header = leading_comment_header(source);
+    let (val, spans) = parse_yaml_with_spans(source, ParseOptions { strict: true })?;
+    let attached = collect_attached_comments(source, &spans);
+    let formatted = if drop_comments {
+        format_yaml_with_comments(&val, header.as_deref(), &CommentBook::default())
+    } else {
+        let book = CommentBook::from_comments(attached.iter().cloned());
+        format_yaml_with_comments(&val, header.as_deref(), &book)
+    };
+
+    let scanned = scan_comments(&formatted);
+    let mut remaining: HashMap<&str, usize> = HashMap::new();
+    for raw in &scanned {
+        *remaining.entry(comment_body(&raw.text)).or_insert(0) += 1;
+    }
+    let mut dropped = Vec::new();
+    for comment in attached {
+        if drop_comments && comment.placement == CommentPlacement::Header {
+            // Header is still written; count it against the formatted comments.
+        }
+        let body = comment_body(&comment.text);
+        match remaining.get_mut(body) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => {
+                if !(drop_comments && comment.placement == CommentPlacement::Header) {
+                    dropped.push(comment);
+                }
+            }
+        }
+    }
+    Ok(FormatResult { formatted, dropped })
 }
 
 fn ordered_keys(map: &Map<String, Value>, is_top_level: bool) -> Vec<&String> {
@@ -421,54 +524,85 @@ fn ordered_keys(map: &Map<String, Value>, is_top_level: bool) -> Vec<&String> {
     keys
 }
 
-fn write_map(out: &mut String, map: &Map<String, Value>, indent: usize, is_top_level: bool) {
+fn write_map(
+    out: &mut String,
+    map: &Map<String, Value>,
+    indent: usize,
+    is_top_level: bool,
+    pointer: &str,
+    comments: Option<&CommentBook>,
+) {
     let pad = " ".repeat(indent);
     for key in ordered_keys(map, is_top_level) {
         let val = &map[key];
         if val.is_null() {
             continue;
         }
-        write_kv(out, &pad, indent, key, val);
+        let child = join_pointer(pointer, key);
+        if let Some(book) = comments {
+            book.write_leading(out, &child, indent);
+        }
+        write_kv(out, &pad, indent, key, val, &child, comments);
     }
 }
 
-fn write_kv(out: &mut String, pad: &str, indent: usize, key: &str, val: &Value) {
+fn write_kv(
+    out: &mut String,
+    pad: &str,
+    indent: usize,
+    key: &str,
+    val: &Value,
+    pointer: &str,
+    comments: Option<&CommentBook>,
+) {
     let key_fmt = format_key(key);
+    let trail = trailing_suffix(comments, pointer);
     match val {
         Value::String(s) => {
             if should_use_block(s, indent + key_fmt.len() + 2) {
-                write_prose(out, indent, &key_fmt, s);
+                write_prose(out, indent, &key_fmt, s, &trail);
             } else {
-                let _ = writeln!(out, "{pad}{key_fmt}: {}", yaml_scalar(s));
+                let _ = writeln!(out, "{pad}{key_fmt}: {}{trail}", yaml_scalar(s));
             }
         }
         Value::Bool(b) => {
-            let _ = writeln!(out, "{pad}{key_fmt}: {b}");
+            let _ = writeln!(out, "{pad}{key_fmt}: {b}{trail}");
         }
         Value::Number(n) => {
-            let _ = writeln!(out, "{pad}{key_fmt}: {n}");
+            let _ = writeln!(out, "{pad}{key_fmt}: {n}{trail}");
         }
         Value::Array(items) if items.is_empty() => {
-            let _ = writeln!(out, "{pad}{key_fmt}: []");
+            let _ = writeln!(out, "{pad}{key_fmt}: []{trail}");
         }
         Value::Array(items) => {
-            let _ = writeln!(out, "{pad}{key_fmt}:");
-            write_seq(out, items, indent + 2);
+            let _ = writeln!(out, "{pad}{key_fmt}:{trail}");
+            write_seq(out, items, indent + 2, pointer, comments);
         }
         Value::Object(map) if map.is_empty() => {
-            let _ = writeln!(out, "{pad}{key_fmt}: {{}}");
+            let _ = writeln!(out, "{pad}{key_fmt}: {{}}{trail}");
         }
         Value::Object(map) => {
-            let _ = writeln!(out, "{pad}{key_fmt}:");
-            write_map(out, map, indent + 2, false);
+            let _ = writeln!(out, "{pad}{key_fmt}:{trail}");
+            write_map(out, map, indent + 2, false, pointer, comments);
         }
         Value::Null => {}
     }
 }
 
-fn write_seq(out: &mut String, items: &[Value], indent: usize) {
+fn write_seq(
+    out: &mut String,
+    items: &[Value],
+    indent: usize,
+    pointer: &str,
+    comments: Option<&CommentBook>,
+) {
     let pad = " ".repeat(indent);
-    for item in items {
+    for (idx, item) in items.iter().enumerate() {
+        let item_ptr = index_pointer(pointer, idx);
+        if let Some(book) = comments {
+            book.write_leading(out, &item_ptr, indent);
+        }
+        let item_trail = trailing_suffix(comments, &item_ptr);
         match item {
             Value::Object(map) if !map.is_empty() => {
                 // Keep `id` or `source` or `method` or `name` first on list-item objects for readability.
@@ -496,49 +630,61 @@ fn write_seq(out: &mut String, items: &[Value], indent: usize) {
                     if val.is_null() {
                         continue;
                     }
+                    let child = join_pointer(&item_ptr, key);
                     if first {
                         first = false;
+                        if let Some(book) = comments {
+                            book.write_leading(out, &child, indent);
+                        }
+                        let trail = {
+                            let t = trailing_suffix(comments, &child);
+                            if t.is_empty() { item_trail.clone() } else { t }
+                        };
                         let key_fmt = format_key(key);
                         match val {
                             Value::String(s)
                                 if should_use_block(s, indent + 2 + key_fmt.len() + 2) =>
                             {
                                 let _ = write!(out, "{pad}- ");
-                                write_prose_inline_first(out, indent + 2, &key_fmt, s);
+                                write_prose_inline_first(out, indent + 2, &key_fmt, s, &trail);
                             }
                             Value::String(s) => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}: {}", yaml_scalar(s));
+                                let _ =
+                                    writeln!(out, "{pad}- {key_fmt}: {}{trail}", yaml_scalar(s));
                             }
                             Value::Bool(b) => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}: {b}");
+                                let _ = writeln!(out, "{pad}- {key_fmt}: {b}{trail}");
                             }
                             Value::Number(n) => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}: {n}");
+                                let _ = writeln!(out, "{pad}- {key_fmt}: {n}{trail}");
                             }
                             Value::Array(arr) if arr.is_empty() => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}: []");
+                                let _ = writeln!(out, "{pad}- {key_fmt}: []{trail}");
                             }
                             Value::Array(arr) => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}:");
-                                write_seq(out, arr, indent + 4);
+                                let _ = writeln!(out, "{pad}- {key_fmt}:{trail}");
+                                write_seq(out, arr, indent + 4, &child, comments);
                             }
                             Value::Object(sub) if sub.is_empty() => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}: {{}}");
+                                let _ = writeln!(out, "{pad}- {key_fmt}: {{}}{trail}");
                             }
                             Value::Object(sub) => {
-                                let _ = writeln!(out, "{pad}- {key_fmt}:");
-                                write_map(out, sub, indent + 4, false);
+                                let _ = writeln!(out, "{pad}- {key_fmt}:{trail}");
+                                write_map(out, sub, indent + 4, false, &child, comments);
                             }
                             Value::Null => {}
                         }
                     } else {
+                        if let Some(book) = comments {
+                            book.write_leading(out, &child, indent + 2);
+                        }
                         let sub_pad = " ".repeat(indent + 2);
-                        write_kv(out, &sub_pad, indent + 2, key, val);
+                        write_kv(out, &sub_pad, indent + 2, key, val, &child, comments);
                     }
                 }
             }
             Value::String(s) if should_use_block(s, indent + 2) => {
-                let _ = writeln!(out, "{pad}- |{}", chomp(s));
+                let _ = writeln!(out, "{pad}- |{}{item_trail}", chomp(s));
                 for line in s.trim_end_matches('\n').split('\n') {
                     if line.is_empty() {
                         out.push('\n');
@@ -548,27 +694,33 @@ fn write_seq(out: &mut String, items: &[Value], indent: usize) {
                 }
             }
             Value::String(s) => {
-                let _ = writeln!(out, "{pad}- {}", yaml_scalar(s));
+                let _ = writeln!(out, "{pad}- {}{item_trail}", yaml_scalar(s));
             }
             Value::Bool(b) => {
-                let _ = writeln!(out, "{pad}- {b}");
+                let _ = writeln!(out, "{pad}- {b}{item_trail}");
             }
             Value::Number(n) => {
-                let _ = writeln!(out, "{pad}- {n}");
+                let _ = writeln!(out, "{pad}- {n}{item_trail}");
             }
             Value::Array(sub) => {
-                let _ = writeln!(out, "{pad}-");
-                write_seq(out, sub, indent + 2);
+                let _ = writeln!(out, "{pad}-{item_trail}");
+                write_seq(out, sub, indent + 2, &item_ptr, comments);
             }
             Value::Object(_) => {
-                let _ = writeln!(out, "{pad}- {{}}");
+                let _ = writeln!(out, "{pad}- {{}}{item_trail}");
             }
             Value::Null => {}
         }
     }
 }
 
-fn write_value(out: &mut String, val: &Value, indent: usize) {
+fn write_value(
+    out: &mut String,
+    val: &Value,
+    indent: usize,
+    pointer: &str,
+    comments: Option<&CommentBook>,
+) {
     match val {
         Value::String(s) => out.push_str(&yaml_scalar(s)),
         Value::Bool(b) => {
@@ -577,8 +729,8 @@ fn write_value(out: &mut String, val: &Value, indent: usize) {
         Value::Number(n) => {
             let _ = write!(out, "{n}");
         }
-        Value::Array(items) => write_seq(out, items, indent),
-        Value::Object(map) => write_map(out, map, indent, false),
+        Value::Array(items) => write_seq(out, items, indent, pointer, comments),
+        Value::Object(map) => write_map(out, map, indent, false, pointer, comments),
         Value::Null => out.push_str("null"),
     }
 }
@@ -700,18 +852,18 @@ fn needs_quote(s: &str) -> bool {
     false
 }
 
-fn write_prose(out: &mut String, indent: usize, key: &str, text: &str) {
+fn write_prose(out: &mut String, indent: usize, key: &str, text: &str, trail: &str) {
     let pad = " ".repeat(indent);
     let trimmed = text.trim();
     let chomp = chomp(text);
     if !trimmed.contains('\n') {
-        let _ = writeln!(out, "{pad}{key}: >{chomp}");
+        let _ = writeln!(out, "{pad}{key}: >{chomp}{trail}");
         for line in wrap_prose(trimmed, prose_width(indent)) {
             let _ = writeln!(out, "{pad}  {line}");
         }
         return;
     }
-    let _ = writeln!(out, "{pad}{key}: |{chomp}");
+    let _ = writeln!(out, "{pad}{key}: |{chomp}{trail}");
     for line in trimmed.split('\n') {
         if line.is_empty() {
             out.push('\n');
@@ -721,18 +873,18 @@ fn write_prose(out: &mut String, indent: usize, key: &str, text: &str) {
     }
 }
 
-fn write_prose_inline_first(out: &mut String, indent: usize, key: &str, text: &str) {
+fn write_prose_inline_first(out: &mut String, indent: usize, key: &str, text: &str, trail: &str) {
     let pad = " ".repeat(indent);
     let trimmed = text.trim();
     let chomp = chomp(text);
     if !trimmed.contains('\n') {
-        let _ = writeln!(out, "{key}: >{chomp}");
+        let _ = writeln!(out, "{key}: >{chomp}{trail}");
         for line in wrap_prose(trimmed, prose_width(indent)) {
             let _ = writeln!(out, "{pad}  {line}");
         }
         return;
     }
-    let _ = writeln!(out, "{key}: |{chomp}");
+    let _ = writeln!(out, "{key}: |{chomp}{trail}");
     for line in trimmed.split('\n') {
         if line.is_empty() {
             out.push('\n');
@@ -892,5 +1044,57 @@ mod tests {
         let (back, _) = parse_yaml(&out).unwrap();
         assert_eq!(back, doc, "formatted output:\n{out}");
         assert_eq!(format_yaml(&back, None), out, "format is not idempotent");
+    }
+
+    #[test]
+    fn format_source_preserves_comments_through_reorder() {
+        let src = "---\n# top comment\n# continues\ntype: implementation\nid: implementation--com.acme.x\nspec_version: \"0.1.0\"\ncreated: 2026-11-08T00:00:00Z\nmodified: 2026-11-08T00:00:00Z\nstatus: implemented\nresponsibility: provider\n# moves with component_ref\ncomponent_ref: component--dev.x.y\nnarrative: x  # trailing\nparts:\n  # item note\n  - id: a\n    statement: \"ok\"\n# eof\n";
+        let once = format_source(src, false).unwrap();
+        assert!(once.dropped.is_empty(), "dropped: {:?}", once.dropped);
+        assert!(
+            once.formatted.starts_with("# top comment\n# continues\n"),
+            "{}",
+            once.formatted
+        );
+        assert!(
+            once.formatted
+                .contains("# moves with component_ref\ncomponent_ref:")
+        );
+        assert!(once.formatted.contains("narrative: x  # trailing"));
+        assert!(
+            once.formatted.contains("# item note\n  - id: a"),
+            "formatted:\n{}",
+            once.formatted
+        );
+        assert!(
+            once.formatted.trim_end().ends_with("# eof"),
+            "{}",
+            once.formatted
+        );
+        // Leading `---` is not required in canonical form; comments after it are kept.
+        assert!(!once.formatted.starts_with("---"));
+        let twice = format_source(&once.formatted, false).unwrap();
+        assert!(twice.dropped.is_empty());
+        assert_eq!(twice.formatted, once.formatted, "fmt is not idempotent");
+    }
+
+    #[test]
+    fn format_source_does_not_treat_hash_in_scalars_as_comments() {
+        let src = "type: control\nstatement: \"has # hash\"\nfolded: |\n  # still content\n";
+        let once = format_source(src, false).unwrap();
+        assert!(once.dropped.is_empty(), "dropped: {:?}", once.dropped);
+        let (back, _) = parse_yaml(&once.formatted).unwrap();
+        assert_eq!(back["statement"], Value::String("has # hash".into()));
+        assert_eq!(back["folded"].as_str().unwrap().trim(), "# still content");
+    }
+
+    #[test]
+    fn format_source_drop_comments_keeps_only_the_header() {
+        let src = "---\n# top\ntype: implementation\n# mid\ncomponent_ref: component--dev.x.y\nnarrative: x  # trailing\n";
+        let dropped = format_source(src, true).unwrap();
+        assert!(dropped.formatted.starts_with("# top\n"));
+        assert!(!dropped.formatted.contains("# mid"));
+        assert!(!dropped.formatted.contains("# trailing"));
+        assert_eq!(dropped.dropped.len(), 2);
     }
 }
