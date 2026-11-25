@@ -12,9 +12,9 @@ use crate::graph::{Graph, objective_exists, part_ids};
 use crate::ids;
 use crate::model::{
     Baseline, Component, Control, ControlOrigin, DocumentStatus, Evidence, ExceptionObj, Finding,
-    Implementation, Mapping, MappingReview, OgrlObject, Policy, Procedure, Program, Requirement,
-    Responsibility, Risk, RiskStatus, System, SystemPartyRole, Test, TestMethod, TestResult,
-    Treatment,
+    Implementation, ImplementationOrigin, Mapping, MappingReview, ObjectType, OgrlObject, Policy,
+    Procedure, Program, Requirement, Responsibility, Risk, RiskStatus, System, SystemPartyRole,
+    Test, TestMethod, TestResult, Treatment,
 };
 use crate::yaml::{Span, SpanMap};
 
@@ -24,6 +24,13 @@ static TIMEOUT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([1-9][0-9]*)([sm])$").unwrap());
 
 pub const MAX_TIMEOUT_SECONDS: u64 = 60 * 60;
+
+/// Organization row uses `responsibility: customer` but no reached system
+/// declares a downstream customer party.
+pub const W_ORG_CUSTOMER: &str = "W_ORG_CUSTOMER";
+/// Organization row uses `responsibility: subservice` on a component the
+/// organization appears to operate (no `component.party_ref`).
+pub const W_ORG_SUBSERVICE: &str = "W_ORG_SUBSERVICE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -49,6 +56,10 @@ pub struct Violation {
     pub conflict: bool,
     #[serde(default)]
     pub severity: Severity,
+    /// Optional diagnostic code override (e.g. `W_ORG_CUSTOMER`). When unset,
+    /// `check_graph_parallel` assigns `E_CONSTRAINT` / `W_CONSTRAINT` / `E_CONFLICT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// A rich diagnostic combining object ID, file path, source span, JSON pointer, and message.
@@ -110,15 +121,26 @@ impl<'a> Checker<'a> {
             detail: detail.into(),
             conflict: false,
             severity: Severity::Error,
+            code: None,
         });
     }
 
     fn warn(&mut self, pointer: impl Into<String>, detail: impl Into<String>) {
+        self.warn_code(pointer, detail, None);
+    }
+
+    fn warn_code(
+        &mut self,
+        pointer: impl Into<String>,
+        detail: impl Into<String>,
+        code: Option<&str>,
+    ) {
         self.out.push(Violation {
             pointer: pointer.into(),
             detail: detail.into(),
             conflict: false,
             severity: Severity::Warning,
+            code: code.map(str::to_string),
         });
     }
 
@@ -128,6 +150,7 @@ impl<'a> Checker<'a> {
             detail: detail.into(),
             conflict: true,
             severity: Severity::Error,
+            code: None,
         });
     }
 
@@ -726,6 +749,49 @@ fn check_program(c: &mut Checker<'_>, p: &Program) {
     c.check_ref("/baseline_ref", Some(&p.baseline_ref), &["baseline"], false);
 }
 
+fn is_org_implementation(i: &Implementation, storage: StorageOrigin) -> bool {
+    if i.is_provider() {
+        return false;
+    }
+    i.origin == Some(ImplementationOrigin::Organization)
+        || (i.origin.is_none() && storage == StorageOrigin::Organization)
+}
+
+fn reached_systems<'a>(graph: &'a Graph, i: &Implementation) -> Option<Vec<&'a System>> {
+    if let Some(sys_id) = i.system_ref.as_deref() {
+        return Some(vec![graph.system(sys_id)?]);
+    }
+    let comp_id = i.component_ref.as_deref()?;
+    let systems: Vec<&System> = graph
+        .all_of_type(ObjectType::System, true)
+        .into_iter()
+        .filter_map(|obj| match obj {
+            OgrlObject::System(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    if systems.is_empty() {
+        return None;
+    }
+    Some(
+        systems
+            .into_iter()
+            .filter(|s| {
+                s.component_refs
+                    .as_deref()
+                    .is_some_and(|refs| refs.iter().any(|r| r == comp_id))
+            })
+            .collect(),
+    )
+}
+
+fn system_has_customer_party(system: &System) -> bool {
+    system
+        .parties
+        .as_deref()
+        .is_some_and(|parties| parties.iter().any(|p| p.role == SystemPartyRole::Customer))
+}
+
 fn check_implementation(c: &mut Checker<'_>, i: &Implementation) {
     if i.system_ref.is_none() && i.component_ref.is_none() {
         c.fail(
@@ -787,6 +853,31 @@ fn check_implementation(c: &mut Checker<'_>, i: &Implementation) {
             "/customer_responsibility",
             "provider implementations with responsibility shared or customer require customer_responsibility",
         );
+    }
+    if is_org_implementation(i, c.origin) && !i.is_revoked() {
+        if i.responsibility == Responsibility::Customer {
+            if let Some(systems) = reached_systems(c.graph, i) {
+                if !systems.is_empty() && !systems.iter().copied().any(system_has_customer_party) {
+                    c.warn_code(
+                        "/responsibility",
+                        "organization implementation uses responsibility customer but no reached system has a parties entry with role customer; use provider or shared unless this system has downstream customers",
+                        Some(W_ORG_CUSTOMER),
+                    );
+                }
+            }
+        } else if i.responsibility == Responsibility::Subservice {
+            if let Some(comp_id) = i.component_ref.as_deref() {
+                if let Some(component) = c.graph.component(comp_id) {
+                    if component.party_ref.is_none() {
+                        c.warn_code(
+                            "/responsibility",
+                            "organization implementation uses responsibility subservice on a component with no party_ref; confirm this is a subservice the organization does not operate",
+                            Some(W_ORG_SUBSERVICE),
+                        );
+                    }
+                }
+            }
+        }
     }
     if i.is_revoked() || i.control_ref.is_none() {
         return;
@@ -1082,13 +1173,15 @@ where
                     let span = spans.and_then(|s| lookup_span(s, &v.pointer));
                     Diagnostic {
                         severity: v.severity,
-                        code: if v.conflict {
-                            "E_CONFLICT".to_string()
-                        } else if v.severity == Severity::Warning {
-                            "W_CONSTRAINT".to_string()
-                        } else {
-                            "E_CONSTRAINT".to_string()
-                        },
+                        code: v.code.unwrap_or_else(|| {
+                            if v.conflict {
+                                "E_CONFLICT".to_string()
+                            } else if v.severity == Severity::Warning {
+                                "W_CONSTRAINT".to_string()
+                            } else {
+                                "E_CONSTRAINT".to_string()
+                            }
+                        }),
                         object_id: Some(obj.id().to_string()),
                         file: file.clone(),
                         line: span.map(|sp| sp.line),

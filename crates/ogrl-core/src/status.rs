@@ -20,6 +20,10 @@ pub const MET: &str = "met";
 pub const GAP: &str = "gap";
 pub const WAIVED: &str = "waived";
 pub const OUT_OF_SCOPE: &str = "out_of_scope";
+pub const OOS_NOT_APPLICABLE: &str = "not_applicable";
+pub const OOS_ORG_CUSTOMER: &str = "org_customer";
+pub const OOS_ORG_SUBSERVICE: &str = "org_subservice";
+pub const OOS_MIXED: &str = "mixed";
 
 pub const COVERED: &str = "covered";
 pub const CONTRIBUTION: &str = "contribution";
@@ -35,6 +39,10 @@ pub struct ControlStatus {
     pub failed: Vec<String>,
     #[serde(default)]
     pub implementation_ids: Vec<String>,
+    /// Present when `state` is `out_of_scope`. One of `not_applicable`,
+    /// `org_customer`, `org_subservice`, or `mixed` when the row reasons differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_of_scope_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +76,10 @@ pub struct ProgramSummary {
     pub expiring_evidence: usize,
     pub expiring_exceptions: usize,
     pub open_findings: usize,
+    /// Counts of out-of-scope controls by reason. Additive; keys are
+    /// `not_applicable`, `org_customer`, `org_subservice`, and `mixed`.
+    #[serde(default)]
+    pub out_of_scope_reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -462,6 +474,32 @@ impl<'a> Evaluator<'a> {
                 ))
     }
 
+    /// Reason a single implementation row is out of scope, if it is.
+    pub fn row_out_of_scope_reason(impl_row: &Implementation) -> Option<&'static str> {
+        if impl_row.status == ImplementationStatus::NotApplicable {
+            Some(OOS_NOT_APPLICABLE)
+        } else if !impl_row.is_provider() && impl_row.responsibility == Responsibility::Customer {
+            Some(OOS_ORG_CUSTOMER)
+        } else if !impl_row.is_provider() && impl_row.responsibility == Responsibility::Subservice {
+            Some(OOS_ORG_SUBSERVICE)
+        } else {
+            None
+        }
+    }
+
+    fn combined_out_of_scope_reason(rows: &[&Implementation]) -> String {
+        let mut reasons = BTreeSet::new();
+        for row in rows {
+            if let Some(reason) = Self::row_out_of_scope_reason(row) {
+                reasons.insert(reason);
+            }
+        }
+        match reasons.len() {
+            1 => (*reasons.iter().next().unwrap()).to_string(),
+            _ => OOS_MIXED.to_string(),
+        }
+    }
+
     pub fn control_status(&mut self, control_id: &str) -> ControlStatus {
         if let Some(cached) = self.control_status_cache.get(control_id) {
             return cached.clone();
@@ -480,6 +518,7 @@ impl<'a> Evaluator<'a> {
                 implementation_id: None,
                 failed: vec![format!("control {control_id} is not loaded")],
                 implementation_ids: Vec::new(),
+                out_of_scope_reason: None,
             };
         };
         let eval = self.under_evaluation(control_id);
@@ -491,6 +530,7 @@ impl<'a> Evaluator<'a> {
                 implementation_id: None,
                 failed: vec!["no implementation on the system or its components".to_string()],
                 implementation_ids: Vec::new(),
+                out_of_scope_reason: None,
             };
         }
         let primary = Some(rows[0].id.clone());
@@ -512,6 +552,7 @@ impl<'a> Evaluator<'a> {
                 implementation_id: primary,
                 failed: Vec::new(),
                 implementation_ids: all_ids,
+                out_of_scope_reason: None,
             };
         }
         if rows.iter().all(|i| self.waived(i)) {
@@ -521,6 +562,7 @@ impl<'a> Evaluator<'a> {
                 implementation_id: primary,
                 failed: Vec::new(),
                 implementation_ids: all_ids,
+                out_of_scope_reason: None,
             };
         }
         if rows.iter().all(|i| Self::out_of_scope(i)) {
@@ -530,6 +572,7 @@ impl<'a> Evaluator<'a> {
                 implementation_id: primary,
                 failed: Vec::new(),
                 implementation_ids: all_ids,
+                out_of_scope_reason: Some(Self::combined_out_of_scope_reason(&rows)),
             };
         }
         failures.extend(halves);
@@ -539,6 +582,7 @@ impl<'a> Evaluator<'a> {
             implementation_id: primary,
             failed: failures,
             implementation_ids: all_ids,
+            out_of_scope_reason: None,
         }
     }
 
@@ -739,8 +783,21 @@ pub fn summarize(graph: &Graph, program: &Program, at: DateTime<Utc>) -> Program
     ]
     .into_iter()
     .collect();
+    let mut oos_reasons: BTreeMap<String, usize> = [
+        (OOS_NOT_APPLICABLE.to_string(), 0),
+        (OOS_ORG_CUSTOMER.to_string(), 0),
+        (OOS_ORG_SUBSERVICE.to_string(), 0),
+        (OOS_MIXED.to_string(), 0),
+    ]
+    .into_iter()
+    .collect();
     for c in &status.controls {
         *control_counts.entry(c.state.clone()).or_insert(0) += 1;
+        if c.state == OUT_OF_SCOPE {
+            if let Some(reason) = &c.out_of_scope_reason {
+                *oos_reasons.entry(reason.clone()).or_insert(0) += 1;
+            }
+        }
     }
 
     let mut req_counts: BTreeMap<String, usize> = [
@@ -833,6 +890,7 @@ pub fn summarize(graph: &Graph, program: &Program, at: DateTime<Utc>) -> Program
         expiring_evidence,
         expiring_exceptions,
         open_findings,
+        out_of_scope_reasons: oos_reasons,
     }
 }
 
