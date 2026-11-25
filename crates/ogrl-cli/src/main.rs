@@ -63,6 +63,9 @@ enum Commands {
         /// Check formatting without modifying files (exits non-zero if changes are needed).
         #[arg(long)]
         check: bool,
+        /// Allow fmt to drop comments it would not keep (header comments are still kept).
+        #[arg(long)]
+        drop_comments: bool,
     },
     /// Import upstream OSCAL catalogs or component definitions into OGRL objects.
     Import {
@@ -295,7 +298,11 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             format,
             lenient_yaml,
         } => cmd_lint(&path, library.as_deref(), profile, format, !lenient_yaml),
-        Commands::Fmt { path, check } => cmd_fmt(&path, check),
+        Commands::Fmt {
+            path,
+            check,
+            drop_comments,
+        } => cmd_fmt(&path, check, drop_comments),
         Commands::Import { target } => cmd_import(target),
         Commands::Bundle { action } => cmd_bundle(action),
         Commands::Eval {
@@ -502,7 +509,7 @@ fn to_sarif(diagnostics: &[Diagnostic]) -> Value {
 
 // --- fmt --------------------------------------------------------------------
 
-fn cmd_fmt(path: &Path, check_only: bool) -> Result<ExitCode, String> {
+fn cmd_fmt(path: &Path, check_only: bool, drop_comments: bool) -> Result<ExitCode, String> {
     let start = Instant::now();
     let files: Vec<PathBuf> = if path.is_file() {
         vec![path.to_path_buf()]
@@ -527,47 +534,69 @@ fn cmd_fmt(path: &Path, check_only: bool) -> Result<ExitCode, String> {
         return Err(format!("{} does not exist", path.display()));
     };
 
-    let results: Vec<Result<(PathBuf, bool), String>> = files
+    let results: Vec<Result<(PathBuf, yaml::FormatResult, String), String>> = files
         .par_iter()
         .map(|file| {
             let original =
                 fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let header = leading_comment_header(&original);
-            let (val, _) = yaml::parse_yaml_with_spans(&original, ParseOptions { strict: true })
-                .map_err(|errs| {
-                    format!(
-                        "{}: {}",
-                        file.display(),
-                        errs.into_iter()
-                            .map(|e| e.to_string())
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    )
-                })?;
-            let formatted = format_with_header(&val, header.as_deref());
-            let changed = formatted != original;
-            if changed && !check_only {
-                fs::write(file, &formatted).map_err(|e| format!("{}: {e}", file.display()))?;
-            }
-            Ok((file.clone(), changed))
+            let result = yaml::format_source(&original, drop_comments).map_err(|errs| {
+                format!(
+                    "{}: {}",
+                    file.display(),
+                    errs.into_iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
+            })?;
+            Ok((file.clone(), result, original))
         })
         .collect();
 
     let mut changed_files = Vec::new();
+    let mut refused = Vec::new();
     for res in results {
-        let (file, changed) = res?;
-        if changed {
+        let (file, result, original) = res?;
+        if !result.dropped.is_empty() && !drop_comments {
+            refused.push((file, result));
+            continue;
+        }
+        if result.formatted != original {
+            if !check_only {
+                fs::write(&file, &result.formatted)
+                    .map_err(|e| format!("{}: {e}", file.display()))?;
+            }
             changed_files.push(file);
         }
     }
     changed_files.sort();
+    refused.sort_by(|a, b| a.0.cmp(&b.0));
 
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    for (file, result) in &refused {
+        eprintln!(
+            "{}: refusing to drop {} comment(s) (pass --drop-comments to allow):",
+            file.display(),
+            result.dropped.len()
+        );
+        for comment in &result.dropped {
+            eprintln!("  line {}: {}", comment.line, comment.text);
+        }
+    }
+
     if check_only {
+        for (file, result) in &refused {
+            println!(
+                "would drop {} comment(s) in {}",
+                result.dropped.len(),
+                file.display()
+            );
+        }
         for f in &changed_files {
             println!("would reformat {}", f.display());
         }
-        if changed_files.is_empty() {
+        if refused.is_empty() && changed_files.is_empty() {
             println!(
                 "ok: {} files formatted canonically ({:.1}ms)",
                 files.len(),
@@ -575,13 +604,29 @@ fn cmd_fmt(path: &Path, check_only: bool) -> Result<ExitCode, String> {
             );
             Ok(ExitCode::SUCCESS)
         } else {
-            eprintln!(
-                "{} of {} file(s) need formatting",
-                changed_files.len(),
-                files.len()
-            );
+            if !refused.is_empty() {
+                eprintln!(
+                    "{} of {} file(s) would drop comments",
+                    refused.len(),
+                    files.len()
+                );
+            }
+            if !changed_files.is_empty() {
+                eprintln!(
+                    "{} of {} file(s) need formatting",
+                    changed_files.len(),
+                    files.len()
+                );
+            }
             Ok(ExitCode::FAILURE)
         }
+    } else if !refused.is_empty() {
+        eprintln!(
+            "left {} of {} file(s) unchanged because comments would be dropped",
+            refused.len(),
+            files.len()
+        );
+        Ok(ExitCode::FAILURE)
     } else {
         println!(
             "formatted {} of {} file(s) in {:.1}ms",
@@ -590,31 +635,6 @@ fn cmd_fmt(path: &Path, check_only: bool) -> Result<ExitCode, String> {
             elapsed_ms
         );
         Ok(ExitCode::SUCCESS)
-    }
-}
-
-fn leading_comment_header(text: &str) -> Option<String> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            lines.push(line);
-        } else {
-            break;
-        }
-    }
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines.join("\n"))
-    }
-}
-
-fn format_with_header(val: &Value, header: Option<&str>) -> String {
-    let body = yaml::format_yaml(val, None);
-    match header {
-        Some(h) => format!("{h}\n{body}"),
-        None => body,
     }
 }
 

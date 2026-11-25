@@ -62,6 +62,12 @@ cargo run --release -- lint ../ogrl-library/library
 cargo run --release -- lint ./my-org --library ../ogrl-library/library --format sarif
 
 # Check or apply canonical YAML 1.2 formatting
+# Comments survive `ogrl fmt` (including key reordering). They do not survive
+# Fathom round trips, Git export, or `format_yaml` on JSON. Provenance that
+# must survive tooling belongs in fields (`external_references`, `extensions`).
+# `fmt` refuses to write a file if it would drop comments, unless you pass
+# `--drop-comments`. `--check` reports "would drop N comments" separately from
+# formatting changes.
 cargo run --release -- fmt ../ogrl-library/library --check
 
 # Import pinned NIST SP 800-53 r5, SP 800-171 r3/r2 OSCAL catalogs (with assessment objectives)

@@ -3,6 +3,7 @@
 pub mod baselines;
 pub mod bundle;
 pub mod canonical;
+pub mod comments;
 pub mod constraints;
 pub mod graph;
 pub mod ids;
