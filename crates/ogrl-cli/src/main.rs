@@ -945,6 +945,24 @@ fn cmd_eval(
                     sum.controls.get("waived").copied().unwrap_or(0),
                     sum.controls.get("out_of_scope").copied().unwrap_or(0),
                 );
+                if sum.controls.get("out_of_scope").copied().unwrap_or(0) > 0 {
+                    println!(
+                        "Out of scope: not_applicable={} org_customer={} org_subservice={} mixed={}",
+                        sum.out_of_scope_reasons
+                            .get("not_applicable")
+                            .copied()
+                            .unwrap_or(0),
+                        sum.out_of_scope_reasons
+                            .get("org_customer")
+                            .copied()
+                            .unwrap_or(0),
+                        sum.out_of_scope_reasons
+                            .get("org_subservice")
+                            .copied()
+                            .unwrap_or(0),
+                        sum.out_of_scope_reasons.get("mixed").copied().unwrap_or(0),
+                    );
+                }
                 println!(
                     "Requirements: covered={} contribution={} unmapped={} gap={}",
                     sum.requirements.get("covered").copied().unwrap_or(0),
@@ -973,7 +991,14 @@ fn cmd_eval(
             println!("At: {}", format_timestamp(&st.at));
             println!("\nControls ({}):", st.controls.len());
             for c in &st.controls {
-                println!("  [{}] {}", c.state, c.control_id);
+                match &c.out_of_scope_reason {
+                    Some(reason) if c.state == "out_of_scope" => {
+                        println!("  [{}] {} ({reason})", c.state, c.control_id);
+                    }
+                    _ => {
+                        println!("  [{}] {}", c.state, c.control_id);
+                    }
+                }
                 for f in &c.failed {
                     println!("      - {f}");
                 }

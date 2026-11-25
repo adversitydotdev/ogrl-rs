@@ -328,3 +328,225 @@ fn unknown_fields_survive_round_trip() {
     let out = obj.to_json_value();
     assert_eq!(out["future_field"], input["future_field"]);
 }
+
+fn find_impl<'a>(graph: &'a Graph, id: &str) -> &'a ogrl_core::model::OgrlObject {
+    graph.get(id).expect("implementation")
+}
+
+#[test]
+fn org_customer_warns_without_downstream_customer_party() {
+    let mut extra = base_org();
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented", "responsibility": "customer"
+    }));
+    let g = graph_with(extra);
+    let obj = find_impl(&g, "implementation--com.acme.ac-01");
+    let v = check(obj, &g, StorageOrigin::Organization);
+    assert!(
+        v.iter()
+            .any(|x| x.code.as_deref() == Some("W_ORG_CUSTOMER")),
+        "expected W_ORG_CUSTOMER, got {v:?}"
+    );
+    assert!(
+        v.iter()
+            .any(|x| x.detail.contains("use provider or shared"))
+    );
+}
+
+#[test]
+fn org_customer_silent_when_system_has_customer_party() {
+    let mut extra = base_org();
+    extra[1] = json!({
+        "type": "system", "id": "system--com.acme.prod",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "Prod", "component_refs": ["component--com.example.idp"],
+        "parties": [{ "party_ref": "party--com.acme.buyer", "role": "customer" }]
+    });
+    extra.push(json!({
+        "type": "party", "id": "party--com.acme.buyer",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "Buyer", "kind": "organization"
+    }));
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented", "responsibility": "customer"
+    }));
+    let g = graph_with(extra);
+    let obj = find_impl(&g, "implementation--com.acme.ac-01");
+    let v = check(obj, &g, StorageOrigin::Organization);
+    assert!(
+        v.iter()
+            .all(|x| x.code.as_deref() != Some("W_ORG_CUSTOMER")),
+        "unexpected warnings: {v:?}"
+    );
+}
+
+#[test]
+fn org_customer_silent_on_partial_graph_with_no_systems() {
+    let impl_row = json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented", "responsibility": "customer"
+    });
+    let component = json!({
+        "type": "component", "id": "component--com.example.idp",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "IdP", "kind": "service"
+    });
+    let g = graph_with(vec![component, impl_row]);
+    let obj = find_impl(&g, "implementation--com.acme.ac-01");
+    let v = check(obj, &g, StorageOrigin::Organization);
+    assert!(
+        v.iter()
+            .all(|x| x.code.as_deref() != Some("W_ORG_CUSTOMER")),
+        "partial graph should not warn, got {v:?}"
+    );
+}
+
+#[test]
+fn org_subservice_warns_on_component_without_party_ref() {
+    let mut extra = base_org();
+    extra.push(json!({
+        "type": "party", "id": "party--com.vendor.idp",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "Vendor", "kind": "organization"
+    }));
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented",
+        "responsibility": "subservice", "subservice_ref": "party--com.vendor.idp"
+    }));
+    let g = graph_with(extra);
+    let obj = find_impl(&g, "implementation--com.acme.ac-01");
+    let v = check(obj, &g, StorageOrigin::Organization);
+    assert!(
+        v.iter()
+            .any(|x| x.code.as_deref() == Some("W_ORG_SUBSERVICE")),
+        "expected W_ORG_SUBSERVICE, got {v:?}"
+    );
+}
+
+#[test]
+fn org_subservice_silent_when_component_has_party_ref() {
+    let mut extra = base_org();
+    extra[0] = json!({
+        "type": "component", "id": "component--com.example.idp",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "IdP", "kind": "service", "party_ref": "party--com.vendor.idp"
+    });
+    extra.push(json!({
+        "type": "party", "id": "party--com.vendor.idp",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "Vendor", "kind": "organization"
+    }));
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented",
+        "responsibility": "subservice", "subservice_ref": "party--com.vendor.idp"
+    }));
+    let g = graph_with(extra);
+    let obj = find_impl(&g, "implementation--com.acme.ac-01");
+    let v = check(obj, &g, StorageOrigin::Organization);
+    assert!(
+        v.iter()
+            .all(|x| x.code.as_deref() != Some("W_ORG_SUBSERVICE")),
+        "unexpected warnings: {v:?}"
+    );
+}
+
+#[test]
+fn eval_summary_breaks_down_out_of_scope_reasons() {
+    let mut extra = base_org();
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented", "responsibility": "customer"
+    }));
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.ac-02",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C2, "status": "not-applicable", "responsibility": "provider"
+    }));
+    let g = graph_with(extra);
+    let at = Utc.with_ymd_and_hms(2026, 11, 9, 0, 0, 0).unwrap();
+    let program = g.program("program--com.acme.p").unwrap();
+    let st = status::evaluate(&g, program, at, None);
+    let c1 = st.controls.iter().find(|c| c.control_id == C1).unwrap();
+    let c2 = st.controls.iter().find(|c| c.control_id == C2).unwrap();
+    assert_eq!(c1.state, "out_of_scope");
+    assert_eq!(c1.out_of_scope_reason.as_deref(), Some("org_customer"));
+    assert_eq!(c2.state, "out_of_scope");
+    assert_eq!(c2.out_of_scope_reason.as_deref(), Some("not_applicable"));
+
+    let sum = status::summarize(&g, program, at);
+    assert_eq!(sum.controls.get("out_of_scope").copied().unwrap_or(0), 2);
+    assert_eq!(
+        sum.out_of_scope_reasons
+            .get("org_customer")
+            .copied()
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sum.out_of_scope_reasons
+            .get("not_applicable")
+            .copied()
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sum.out_of_scope_reasons
+            .get("org_subservice")
+            .copied()
+            .unwrap(),
+        0
+    );
+    assert_eq!(sum.out_of_scope_reasons.get("mixed").copied().unwrap(), 0);
+}
+
+#[test]
+fn eval_marks_mixed_out_of_scope_when_row_reasons_differ() {
+    let mut extra = base_org();
+    extra.push(json!({
+        "type": "component", "id": "component--com.acme.app",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "App", "kind": "software"
+    }));
+    // Include the second component on the system so both rows are under evaluation.
+    extra[1] = json!({
+        "type": "system", "id": "system--com.acme.prod",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "name": "Prod",
+        "component_refs": ["component--com.example.idp", "component--com.acme.app"]
+    });
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.idp-ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.example.idp",
+        "control_ref": C1, "status": "implemented", "responsibility": "customer"
+    }));
+    extra.push(json!({
+        "type": "implementation", "id": "implementation--com.acme.app-ac-01",
+        "spec_version": "0.1.0", "created": STAMP, "modified": STAMP,
+        "origin": "organization", "component_ref": "component--com.acme.app",
+        "control_ref": C1, "status": "not-applicable", "responsibility": "provider"
+    }));
+    let g = graph_with(extra);
+    let at = Utc.with_ymd_and_hms(2026, 11, 9, 0, 0, 0).unwrap();
+    let st = status::evaluate(&g, g.program("program--com.acme.p").unwrap(), at, None);
+    let c1 = st.controls.iter().find(|c| c.control_id == C1).unwrap();
+    assert_eq!(c1.state, "out_of_scope");
+    assert_eq!(c1.out_of_scope_reason.as_deref(), Some("mixed"));
+}
