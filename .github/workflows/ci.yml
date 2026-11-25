@@ -22,6 +22,28 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Check Python package version is dynamic from Cargo
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          text = Path("crates/ogrl-py/pyproject.toml").read_text()
+          if 'dynamic = ["version"]' not in text and "dynamic = ['version']" not in text:
+              print("Error: crates/ogrl-py/pyproject.toml must use dynamic = [\"version\"] so the wheel follows the Cargo workspace version", file=sys.stderr)
+              sys.exit(1)
+          # A static project version would silently diverge from Cargo again.
+          in_project = False
+          for raw in text.splitlines():
+              line = raw.strip()
+              if line.startswith("[") and line.endswith("]"):
+                  in_project = line == "[project]"
+                  continue
+              if in_project and line.startswith("version"):
+                  print(f"Error: crates/ogrl-py/pyproject.toml has a static {line}; use dynamic = [\"version\"] instead", file=sys.stderr)
+                  sys.exit(1)
+          print("ok: pyproject.toml takes its version from the Cargo workspace")
+          PY
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy (workspace + ogrl-py)

@@ -564,6 +564,7 @@ fn import_oscal_catalog_json(
 
 #[pymodule]
 fn _ogrl_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<OgrlGraph>()?;
     m.add_function(wrap_pyfunction!(parse_yaml_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_yaml_str, m)?)?;

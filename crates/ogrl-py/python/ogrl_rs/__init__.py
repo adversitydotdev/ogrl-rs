@@ -15,7 +15,10 @@ from typing import Any
 
 from ogrl_rs import _ogrl_rs
 
+__version__ = _ogrl_rs.__version__
+
 __all__ = [
+    "__version__",
     "OgrlGraph",
     "RenderedFile",
     "canonical_json",
